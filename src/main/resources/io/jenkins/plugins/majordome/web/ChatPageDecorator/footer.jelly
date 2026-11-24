@@ -1,0 +1,8 @@
+<?jelly escape-by-default='true'?>
+<j:jelly xmlns:j="jelly:core">
+  <j:if test="${it.visible}">
+    <link rel="stylesheet" href="${rootURL}/plugin/majordome/css/majordome-chat.css"/>
+    <div id="majordome-floating-root" data-endpoint="${rootURL}/majordome" data-mode="floating"/>
+    <script src="${rootURL}/plugin/majordome/js/majordome-chat.js"/>
+  </j:if>
+</j:jelly>

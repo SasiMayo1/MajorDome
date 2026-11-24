@@ -1,0 +1,11 @@
+<?jelly escape-by-default='true'?>
+<j:jelly xmlns:j="jelly:core" xmlns:l="/lib/layout">
+  <l:layout title="${it.displayName}" type="one-column">
+    <l:main-panel>
+      <link rel="stylesheet" href="${rootURL}/plugin/majordome/css/majordome-chat.css"/>
+      <h1>${it.displayName}</h1>
+      <div id="majordome-page-root" class="majordome-page" data-endpoint="${rootURL}/majordome" data-mode="page"/>
+      <script src="${rootURL}/plugin/majordome/js/majordome-chat.js"/>
+    </l:main-panel>
+  </l:layout>
+</j:jelly>

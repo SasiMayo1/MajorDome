@@ -1,0 +1,23 @@
+<?jelly escape-by-default='true'?>
+<j:jelly xmlns:j="jelly:core" xmlns:f="/lib/form" xmlns:c="/lib/credentials">
+  <f:entry title="API key" field="credentialsId">
+    <c:select/>
+  </f:entry>
+  <f:entry title="Model" field="model">
+    <f:textbox default="claude-opus-5-5"/>
+  </f:entry>
+  <f:entry title="Effort" field="effort">
+    <f:select default="medium"/>
+  </f:entry>
+  <f:advanced>
+    <f:entry title="Base URL (optional, e.g. an AI gateway)" field="baseUrl">
+      <f:textbox/>
+    </f:entry>
+    <f:entry title="Max output tokens" field="maxTokens">
+      <f:number default="16000" min="1024"/>
+    </f:entry>
+    <f:entry field="serverFallbacks">
+      <f:checkbox title="If the model declines a request, let the API retry it on a fallback model" default="true"/>
+    </f:entry>
+  </f:advanced>
+</j:jelly>

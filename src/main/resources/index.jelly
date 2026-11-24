@@ -1,0 +1,5 @@
+<?jelly escape-by-default='true'?>
+<div>
+  AI chat assistant for Jenkins. It reads jobs, builds, logs and system state with the
+  signed-in user's permissions, and proposes changes that run only after a human confirms them.
+</div>

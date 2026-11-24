@@ -1,0 +1,20 @@
+<?jelly escape-by-default='true'?>
+<j:jelly xmlns:j="jelly:core" xmlns:f="/lib/form" xmlns:c="/lib/credentials">
+  <f:entry title="Base URL" field="baseUrl" description="Ending in /v1, e.g. http://localhost:11434/v1 for Ollama">
+    <f:textbox default="http://localhost:11434/v1"/>
+  </f:entry>
+  <f:entry title="Model" field="model" description="Must support tool (function) calling">
+    <f:textbox/>
+  </f:entry>
+  <f:entry title="API key (optional)" field="credentialsId">
+    <c:select/>
+  </f:entry>
+  <f:advanced>
+    <f:entry title="Max output tokens" field="maxTokens">
+      <f:number default="8192" min="256"/>
+    </f:entry>
+    <f:entry title="Request timeout (seconds)" field="timeoutSeconds">
+      <f:number default="300" min="10"/>
+    </f:entry>
+  </f:advanced>
+</j:jelly>
