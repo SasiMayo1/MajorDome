@@ -111,10 +111,14 @@ Principi non negoziabili:
 
 ### Fase 0 — Fondamenta (1–2 settimane)
 - [x] Ambiente: JDK 21 + Maven 3.9 su WSL Ubuntu (in `~/opt`), `mvn verify` verde
-- [ ] `mvn hpi:run` e prova manuale con un modello vero (Anthropic e Ollama)
+- [x] `mvn hpi:run` e prova manuale con un modello vero: Ollama 0.40.18 +
+      `qwen2.5:3b` in WSL (proposta di build creata e non eseguita senza conferma;
+      il modello 3B sbaglia a volte il nome del job). Anthropic: provider testato
+      sul formato reale dell'API con un server finto (`AnthropicProviderTest`),
+      la prova con una chiave vera resta da fare quando avremo una API key
 - [x] Scheletro del plugin (pom, licenza MIT, README, `.gitignore`)
 - [x] Nome: **MajorDome** (artifactId `majordome`, package `io.jenkins.plugins.majordome`)
-- [ ] Repository git + primo commit
+- [x] Repository git + primo commit (https://github.com/SasiMayo1/MajorDome)
 - [x] Permesso `MajorDome/Use` (implicito da `Overall/Administer`)
 - [x] Configurazione globale: provider, modello, credenziale, limiti (+ JCasC via `@Symbol`)
 - [x] `LlmProvider` + `AnthropicProvider` (SDK ufficiale) + `OpenAiCompatibleProvider`
@@ -167,6 +171,9 @@ Due domande aperte, con una proposta per ciascuna:
    - una lista di modelli open testati sul *nostro* set di tool, con un piccolo
      benchmark (eval) sulla qualità del tool-calling. Questo è il vero valore,
      perché molti modelli piccoli sbagliano il tool calling.
+   - idea da valutare: un modello 7–8B su una VM OCI Always Free (Ampere A1,
+     4 OCPU / 24 GB, solo CPU) come endpoint di sviluppo condiviso, raggiungibile
+     solo via tunnel o reverse proxy con token (Ollama non ha autenticazione).
 2. **"L'utente carica un proprio agente?"** Proposta: il `ToolRegistry` è
    indipendente dal loop, quindi si può esporre **lo stesso catalogo di tool**
    ad agenti esterni, per esempio via MCP. Le scritture restano "proposte" che
