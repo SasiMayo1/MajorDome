@@ -218,7 +218,9 @@ Per noi l'unica strada per provare con modelli veri, perché non avremo una API 
    - [ ] Set fisso di domande con le chiamate ai tool e le risposte attese
          (es. "perché è fallita X?", "fai partire X" → solo proposta)
    - [ ] Metriche: tool giusti con argomenti giusti, nessuna azione senza
-         conferma, tempo di risposta
+         conferma, tempo di risposta, **nessun nome di tool nella risposta**
+         (il 3B dice "usa trigger_build" invece di offrirsi), **nessun dettaglio
+         inventato** rispetto ai dati dei tool, qualità della lingua (italiano)
    - [ ] Eseguibile su qualsiasi provider, per confrontare i modelli
 3. **Rimedi economici**, utili a tutti i modelli (anticipabili in Fase 1)
    - [x] Job non trovato → il tool suggerisce i nomi simili ("forse intendevi

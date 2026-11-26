@@ -71,6 +71,8 @@ public final class ChatService {
             tests, log errors and the changes since the last success in one call.
             - When the context names a job or build on the user's page, "this job" or "this build" means \
             it.
+            - The tools are yours, not the user's: never tell the user to run a tool or mention tool \
+            names. To go further, offer to do it yourself (e.g. "Do you want me to start a new build?").
             - Refer to jobs by their full name (folder/job) and builds as job #number.
             - Reply in the language the user writes in. Be concise; use Markdown lists and code blocks \
             only when they help.""";
