@@ -114,8 +114,9 @@ Principi non negoziabili:
 - [x] `mvn hpi:run` e prova manuale con un modello vero: Ollama 0.40.18 +
       `qwen2.5:3b` in WSL (proposta di build creata e non eseguita senza conferma;
       il modello 3B sbaglia a volte il nome del job). Anthropic: provider testato
-      sul formato reale dell'API con un server finto (`AnthropicProviderTest`),
-      la prova con una chiave vera resta da fare quando avremo una API key
+      sul formato reale dell'API con un server finto (`AnthropicProviderTest`).
+      Non avremo una API key: le prove con modelli veri passano solo da modelli
+      self-hosted (vedi Fase 3)
 - [x] Scheletro del plugin (pom, licenza MIT, README, `.gitignore`)
 - [x] Nome: **MajorDome** (artifactId `majordome`, package `io.jenkins.plugins.majordome`)
 - [x] Repository git + primo commit (https://github.com/SasiMayo1/MajorDome)
@@ -170,16 +171,74 @@ Due domande aperte, con una proposta per ciascuna:
      Jenkins);
    - una lista di modelli open testati sul *nostro* set di tool, con un piccolo
      benchmark (eval) sulla qualità del tool-calling. Questo è il vero valore,
-     perché molti modelli piccoli sbagliano il tool calling.
-   - idea da valutare: un modello 7–8B su una VM OCI Always Free (Ampere A1,
-     4 OCPU / 24 GB, solo CPU) come endpoint di sviluppo condiviso, raggiungibile
-     solo via tunnel o reverse proxy con token (Ollama non ha autenticazione).
+     perché molti modelli piccoli sbagliano il tool calling;
+   - eventualmente un **nostro modello addestrato** sui tool di MajorDome
+     (vedi il piano qui sotto), pubblicato a parte, mai dentro il plugin.
 2. **"L'utente carica un proprio agente?"** Proposta: il `ToolRegistry` è
    indipendente dal loop, quindi si può esporre **lo stesso catalogo di tool**
    ad agenti esterni, per esempio via MCP. Le scritture restano "proposte" che
    un umano conferma in Jenkins. L'agente esterno porta la propria
    intelligenza, MajorDome garantisce la governance. Da valutare se integrarsi con
    `mcp-server-plugin` invece di duplicarlo.
+
+#### Dove gira il modello (deciso il 2026-11-26)
+Il plugin gira nel controller Jenkins ed esegue i tool; **il modello è un servizio
+esterno scelto dall'admin di ogni installazione**: un'API cloud (con la chiave e
+il conto dell'azienda) oppure un endpoint self-hosted (Ollama, vLLM… sui server
+dell'azienda). Noi **non ospitiamo** modelli per gli utenti, per costi, privacy e
+sicurezza. Senza un provider configurato il plugin non invia nulla all'esterno.
+
+#### Piano modelli self-hosted
+Per noi l'unica strada per provare con modelli veri, perché non avremo una API key.
+
+1. **Endpoint di sviluppo su OCI Always Free**
+   - [ ] VM Ampere A1 (ARM, oggi **2 OCPU / 12 GB**, solo CPU) con Ollama
+   - [ ] Raggiungibile solo via tunnel SSH o reverse proxy con token (Ollama non
+         ha autenticazione; il provider OpenAI-compatible accetta una credenziale)
+   - [ ] Misurare la latenza reale (circa 3k token di prompt a ogni turno) e
+         verificare che Ollama riusi il prefisso del prompt tra un turno e l'altro
+   - [ ] Confrontare un modello 7–8B (es. `qwen2.5:7b`) con un paio di
+         alternative della stessa taglia
+   - Rischi: capacità Always Free spesso esaurita, VM inattive recuperate da Oracle
+2. **Benchmark (eval) del tool calling**, da fare prima di tutto il resto
+   - [ ] Set fisso di domande con le chiamate ai tool e le risposte attese
+         (es. "perché è fallita X?", "fai partire X" → solo proposta)
+   - [ ] Metriche: tool giusti con argomenti giusti, nessuna azione senza
+         conferma, tempo di risposta
+   - [ ] Eseguibile su qualsiasi provider, per confrontare i modelli
+3. **Rimedi economici**, utili a tutti i modelli (anticipabili in Fase 1)
+   - [ ] Job non trovato → il tool suggerisce i nomi simili ("forse intendevi
+         `demo-fail`?"): avrebbe risolto l'errore del 3B nella prova della Fase 0
+   - [ ] Descrizioni dei tool più brevi, per avere un prompt più corto e quindi
+         risposte più veloci su CPU
+   - [ ] Valutare di inviare al modello solo i tool pertinenti alla domanda
+4. **Fine-tuning di un modello leggero (1,5–4B) sui nostri tool**, solo se dopo
+   i punti 2–3 resta un divario misurabile
+   - [ ] Scegliere il modello base **anche per la licenza**: deve permettere uso
+         commerciale e redistribuzione (Apache 2.0 / MIT). Qwen2.5 3B ha una
+         licenza solo per ricerca: da escludere. Da verificare al momento:
+         Qwen3-4B, IBM Granite, Phi-4-mini, SmolLM3, Llama 3.2 3B (licenza propria)
+   - [ ] Dataset: qualche centinaio di conversazioni con i *nostri* tool,
+         generate da una Jenkins di test con job finti (nessun dato reale)
+   - [ ] Addestramento LoRA/QLoRA su GPU gratuita (Colab o Kaggle, es. Unsloth);
+         né il PC né la VM OCI hanno una GPU
+   - [ ] Export in GGUF e import in Ollama; il benchmark deve mostrare il
+         miglioramento prima della pubblicazione
+   - Quando conviene: per le domande "di cultura Jenkins" meglio la
+     documentazione al momento della domanda (RAG) che il fine-tuning
+5. **Distribuzione del modello addestrato**
+   - [ ] Pubblicato a parte, **non nel `.hpi`** (circa 2 GB): Hugging Face (pesi,
+         GGUF, scheda del modello con limiti e risultati del benchmark) e
+         registro Ollama (`ollama pull <utente>/majordome:3b`)
+   - [ ] Versioni legate al catalogo dei tool (es. `majordome:3b-tools1`):
+         ri-addestrare quando i tool cambiano in modo significativo
+   - [ ] Pubblicare anche il dataset, così altri possono addestrare altri modelli
+6. **Esperienza per chi installa il plugin**
+   - [ ] `docker-compose` di riferimento: Jenkins + Ollama già collegati
+   - [ ] Lista di modelli consigliati per hardware (con GPU / solo CPU), presa
+         dal benchmark
+   - [ ] Messaggi chiari quando il provider manca o non risponde, che dicano
+         all'utente cosa chiedere all'admin
 
 ### Fase 4 — Open source e rilascio
 - [ ] Repository GitHub pubblico, CI (GitHub Actions + `Jenkinsfile` con
