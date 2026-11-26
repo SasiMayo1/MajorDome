@@ -131,6 +131,13 @@ Principi non negoziabili:
       solo proposte, approvazione, approvazione da parte di un altro utente
       rifiutata, prompt injection, redazione dei segreti, CSRF, permesso Use
 
+Ambiente di sviluppo (promemoria):
+- [ ] Alzare la memoria di WSL: il PC ha 16 GB, WSL di default ne prende la metà
+      (~7,7 GB) e con Jenkins + Ollama si è bloccato una volta. In
+      `%USERPROFILE%\.wslconfig`, sezione `[wsl2]`: `memory=10GB` e `swap=4GB`
+      (restano ~6 GB a Windows), poi `wsl --shutdown`. Serve anche per un 3B
+      addestrato o un 7B in locale
+
 ### Fase 1 — MVP per sviluppatori e operatori (2–3 settimane)
 Tool utente:
 - [ ] Lettura: elenco job, stato job, dettaglio build, coda del log (redatta),
@@ -138,12 +145,19 @@ Tool utente:
       opzionale da `workflow-api`), coda di esecuzione, artifact
 - [ ] Scrittura: avvio build con parametri, abort, replay/rebuild,
       enable/disable job
-- [ ] Caso d'uso guida: **"perché è fallita questa build?"** (log + test +
-      changeset + confronto con l'ultima build riuscita)
+- [x] Caso d'uso guida: **"perché è fallita questa build?"** (log + test +
+      changeset + confronto con l'ultima build riuscita): tool `diagnose_build`
+      che mette insieme tutto in una chiamata (ultima build riuscita, da quante
+      build fallisce, commit da allora, test nuovi vs già rotti, righe di errore
+      del log redatte). Provato con `qwen2.5:3b`: diagnosi corretta in ~26 s su CPU
+- [x] Job non trovato → "forse intendevi…?" con i soli job visibili all'utente
+      (anticipato dalla Fase 3). Con il 3B: suggerisce il nome giusto ma chiede
+      conferma invece di riprovare da solo
 
 Piattaforma:
-- [ ] Contesto della pagina risolto lato server (sono su `job/x/42` → il modello
-      lo sa)
+- [x] Contesto della pagina risolto lato server (sono su `job/x/42` → il modello
+      lo sa), solo per i job che l'utente può leggere; anche permalink come
+      `lastFailedBuild`
 - [ ] Streaming delle risposte (SSE) e richieste non bloccanti
 - [ ] Conversazioni persistenti per utente (`JENKINS_HOME/majordome/…`)
 - [ ] Budget token per utente e al mese, conteggio dei costi
@@ -207,8 +221,8 @@ Per noi l'unica strada per provare con modelli veri, perché non avremo una API 
          conferma, tempo di risposta
    - [ ] Eseguibile su qualsiasi provider, per confrontare i modelli
 3. **Rimedi economici**, utili a tutti i modelli (anticipabili in Fase 1)
-   - [ ] Job non trovato → il tool suggerisce i nomi simili ("forse intendevi
-         `demo-fail`?"): avrebbe risolto l'errore del 3B nella prova della Fase 0
+   - [x] Job non trovato → il tool suggerisce i nomi simili ("forse intendevi
+         `demo-fail`?"): fatto nella Fase 1
    - [ ] Descrizioni dei tool più brevi, per avere un prompt più corto e quindi
          risposte più veloci su CPU
    - [ ] Valutare di inviare al modello solo i tool pertinenti alla domanda
