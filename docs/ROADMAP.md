@@ -158,7 +158,15 @@ Piattaforma:
 - [x] Contesto della pagina risolto lato server (sono su `job/x/42` → il modello
       lo sa), solo per i job che l'utente può leggere; anche permalink come
       `lastFailedBuild`
-- [ ] Streaming delle risposte (SSE) e richieste non bloccanti
+- [x] Streaming delle risposte (SSE): endpoint `POST /majordome/chatStream` con
+      eventi `text` / `tool` / `proposal` / `done` / `error`; il widget mostra il
+      testo man mano e quale tool sta girando. Streaming token per token con il
+      provider OpenAI-compatible (disattivabile); provato con Ollama: primo testo
+      a ~50 s invece di vedere tutto a ~73 s
+- [ ] Streaming token per token anche per il provider Anthropic (ora riceve gli
+      stessi eventi, ma il testo arriva in un pezzo solo)
+- [ ] Richieste non bloccanti: oggi un turno occupa un thread HTTP di Jenkins
+      per tutta la sua durata
 - [ ] Conversazioni persistenti per utente (`JENKINS_HOME/majordome/…`)
 - [ ] Budget token per utente e al mese, conteggio dei costi
 - [ ] Interfaccia in italiano e inglese

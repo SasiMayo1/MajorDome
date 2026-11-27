@@ -103,6 +103,12 @@ public final class ChatService {
 
     public TurnResult chat(Conversation conv, String userText, @CheckForNull String pageUrl)
             throws LlmException, InterruptedException {
+        return chat(conv, userText, pageUrl, TurnListener.NONE);
+    }
+
+    /** Runs one turn, reporting text, tool use and proposals to {@code listener} as they happen. */
+    public TurnResult chat(Conversation conv, String userText, @CheckForNull String pageUrl, TurnListener listener)
+            throws LlmException, InterruptedException {
         String userId = currentUserId();
         if (!conv.getUserId().equals(userId)) {
             throw new IllegalStateException("Conversation belongs to another user");
@@ -130,7 +136,18 @@ public final class ChatService {
 
             try {
                 for (int i = 0; i < maxIterations; i++) {
-                    LlmResponse response = provider.chat(new LlmRequest(SYSTEM_PROMPT, history, specs));
+                    // Streams this call's text; a blank line separates it from text of earlier calls.
+                    boolean[] streamed = {false};
+                    boolean separate = !replies.isEmpty();
+                    LlmResponse response = provider.chat(new LlmRequest(SYSTEM_PROMPT, history, specs), delta -> {
+                        if (!streamed[0]) {
+                            streamed[0] = true;
+                            if (separate) {
+                                listener.onText("\n\n");
+                            }
+                        }
+                        listener.onText(delta);
+                    });
                     inputTokens += response.inputTokens();
                     outputTokens += response.outputTokens();
                     ChatMessage assistant = response.message();
@@ -138,6 +155,10 @@ public final class ChatService {
                     String said = assistant.getText();
                     if (said != null && !said.isBlank()) {
                         replies.add(said.strip());
+                        if (!streamed[0]) {
+                            // The provider does not stream: report the whole text at once.
+                            listener.onText(separate ? "\n\n" + said.strip() : said.strip());
+                        }
                     }
                     if (response.stopReason() == LlmResponse.StopReason.REFUSAL) {
                         replies.add("_The model declined to answer this request._");
@@ -152,7 +173,12 @@ public final class ChatService {
                     List<ToolResult> results = new ArrayList<>();
                     for (ToolCall call : assistant.getToolCalls()) {
                         toolsUsed.add(call.name());
+                        listener.onToolStarted(call.name());
+                        int before = proposals.size();
                         results.add(runTool(conv, tools, call, proposals, userId));
+                        if (proposals.size() > before) {
+                            listener.onProposal(proposals.get(proposals.size() - 1));
+                        }
                     }
                     history.add(ChatMessage.toolResults(results));
                     if (i == maxIterations - 1) {

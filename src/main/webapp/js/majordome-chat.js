@@ -72,6 +72,81 @@
     });
   }
 
+  /**
+   * POSTs and reads the reply as Server-Sent Events, calling onEvent(name, data) for each event.
+   * Resolves when the stream ends. Non-stream replies (HTTP errors) reject with their message.
+   */
+  function stream(path, body, onEvent) {
+    return fetch(endpoint + "/" + path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: Object.assign({ "Content-Type": "application/json" }, crumbHeaders()),
+      body: JSON.stringify(body),
+    }).then(function (rsp) {
+      const type = rsp.headers.get("Content-Type") || "";
+      if (!rsp.ok || type.indexOf("text/event-stream") !== 0) {
+        return rsp.json()
+          .catch(function () {
+            return { error: "Unexpected response (HTTP " + rsp.status + ")" };
+          })
+          .then(function (data) {
+            throw new Error(data.error || "HTTP " + rsp.status);
+          });
+      }
+      if (!rsp.body || !rsp.body.getReader || typeof TextDecoder === "undefined") {
+        // No streaming support: same events, all at the end.
+        return rsp.text().then(function (all) {
+          parseEvents(all + "\n\n", onEvent);
+        });
+      }
+      const reader = rsp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      function pump() {
+        return reader.read().then(function (chunk) {
+          if (chunk.done) {
+            parseEvents(buffer + decoder.decode() + "\n\n", onEvent);
+            return undefined;
+          }
+          buffer = parseEvents(buffer + decoder.decode(chunk.value, { stream: true }), onEvent);
+          return pump();
+        });
+      }
+      return pump();
+    });
+  }
+
+  /** Dispatches every complete event in buf and returns the incomplete remainder. */
+  function parseEvents(buf, onEvent) {
+    let sep = buf.indexOf("\n\n");
+    while (sep >= 0) {
+      const frame = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      let name = "message";
+      let data = "";
+      frame.split("\n").forEach(function (line) {
+        if (line.indexOf("event:") === 0) {
+          name = line.slice(6).trim();
+        } else if (line.indexOf("data:") === 0) {
+          data += line.slice(5).trim();
+        }
+      });
+      if (data) {
+        let parsed = null;
+        try {
+          parsed = JSON.parse(data);
+        } catch (e) {
+          parsed = null;
+        }
+        if (parsed) {
+          onEvent(name, parsed);
+        }
+      }
+      sep = buf.indexOf("\n\n");
+    }
+    return buf;
+  }
+
   function storageGet(key) {
     try {
       return window.sessionStorage.getItem(key);
@@ -264,21 +339,75 @@
     sendBtn.disabled = true;
     input.value = "";
     addMessage("user", text);
+    // The status line stays below everything the turn adds.
     const thinking = addMessage("thinking", "Thinking…");
+    let bubble = null;
+    let streamed = "";
+    let finished = false;
+    const shown = {};
+
+    function keepStatusLast() {
+      log.appendChild(thinking);
+      scroll();
+    }
     function done() {
       busy = false;
       sendBtn.disabled = false;
       input.focus();
     }
-    call("chat", { message: text, page: window.location.pathname })
-      .then(function (r) {
-        thinking.remove();
-        if (r.reply) {
-          addMessage("assistant", r.reply);
+    function showProposal(p) {
+      if (!shown[p.id]) {
+        shown[p.id] = true;
+        addProposal({ id: p.id, tool: p.tool, text: p.preview, status: "PENDING" });
+      }
+    }
+
+    stream("chatStream", { message: text, page: window.location.pathname }, function (event, data) {
+      switch (event) {
+        case "text":
+          streamed += data.delta;
+          if (!bubble) {
+            bubble = addMessage("assistant", "");
+          }
+          bubble.innerHTML = renderMarkdown(streamed); // escaped inside renderMarkdown
+          thinking.textContent = "Writing…";
+          keepStatusLast();
+          break;
+        case "tool":
+          thinking.textContent = "Working… (" + data.name + ")";
+          keepStatusLast();
+          break;
+        case "proposal":
+          showProposal(data);
+          keepStatusLast();
+          break;
+        case "done":
+          finished = true;
+          thinking.remove();
+          // The final reply is authoritative (it also carries notes that were not streamed).
+          if (data.reply) {
+            if (!bubble) {
+              bubble = addMessage("assistant", "");
+            }
+            bubble.innerHTML = renderMarkdown(data.reply);
+          }
+          (data.proposals || []).forEach(showProposal);
+          scroll();
+          break;
+        case "error":
+          finished = true;
+          thinking.remove();
+          addMessage("error", data.error);
+          break;
+        default:
+          break;
+      }
+    })
+      .then(function () {
+        if (!finished) {
+          thinking.remove();
+          addMessage("error", "The connection ended before the reply was complete. Reload the page to see the conversation.");
         }
-        (r.proposals || []).forEach(function (p) {
-          addProposal({ id: p.id, tool: p.tool, text: p.preview, status: "PENDING" });
-        });
         done();
       })
       .catch(function (e) {

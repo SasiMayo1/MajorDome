@@ -12,6 +12,7 @@ import hudson.model.Descriptor;
 import hudson.security.ACL;
 import hudson.util.ListBoxModel;
 import java.util.Collections;
+import java.util.function.Consumer;
 import jenkins.model.Jenkins;
 import org.jenkinsci.plugins.plaincredentials.StringCredentials;
 
@@ -26,6 +27,16 @@ public abstract class LlmProvider implements Describable<LlmProvider>, Extension
      * user who is chatting, so implementations must apply timeouts.
      */
     public abstract LlmResponse chat(LlmRequest request) throws LlmException, InterruptedException;
+
+    /**
+     * Like {@link #chat(LlmRequest)}, but reports the assistant text as it is generated. Providers that
+     * cannot stream keep this default: it calls {@link #chat(LlmRequest)} and reports nothing, and the
+     * caller then shows the whole text at once. The returned response is always complete.
+     */
+    public LlmResponse chat(LlmRequest request, Consumer<String> onTextDelta)
+            throws LlmException, InterruptedException {
+        return chat(request);
+    }
 
     /**
      * Identifies the backend and model. When it changes, conversations started with another backend

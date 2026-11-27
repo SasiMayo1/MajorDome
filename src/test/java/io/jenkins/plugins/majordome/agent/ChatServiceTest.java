@@ -18,13 +18,21 @@ import hudson.security.ACL;
 import hudson.security.ACLContext;
 import io.jenkins.plugins.majordome.MajorDomePermissions;
 import io.jenkins.plugins.majordome.actions.ActionException;
+import io.jenkins.plugins.majordome.actions.PendingAction;
 import io.jenkins.plugins.majordome.actions.PendingActionStore;
 import io.jenkins.plugins.majordome.audit.AuditLog;
 import io.jenkins.plugins.majordome.llm.ChatMessage;
+import io.jenkins.plugins.majordome.llm.LlmProvider;
+import io.jenkins.plugins.majordome.llm.LlmRequest;
+import io.jenkins.plugins.majordome.llm.LlmResponse;
+import io.jenkins.plugins.majordome.llm.ToolCall;
 import io.jenkins.plugins.majordome.llm.ToolResult;
+import io.jenkins.plugins.majordome.util.Json;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.function.Consumer;
 import jenkins.model.Jenkins;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -193,6 +201,88 @@ class ChatServiceTest {
         List<ChatMessage> sent = next.requests().get(0).messages();
         String lastUserText = sent.get(sent.size() - 1).getText();
         assertTrue(lastUserText.contains("rejected"), lastUserText);
+    }
+
+    /** Records listener events as "kind:value" strings, merging consecutive text pieces. */
+    private static final class Recorder implements TurnListener {
+        final List<String> events = new ArrayList<>();
+
+        @Override
+        public void onText(String delta) {
+            int last = events.size() - 1;
+            if (last >= 0 && events.get(last).startsWith("text:")) {
+                events.set(last, events.get(last) + delta);
+            } else {
+                events.add("text:" + delta);
+            }
+        }
+
+        @Override
+        public void onToolStarted(String toolName) {
+            events.add("tool:" + toolName);
+        }
+
+        @Override
+        public void onProposal(PendingAction proposal) {
+            events.add("proposal:" + proposal.toolName());
+        }
+    }
+
+    private static TurnResult chat(String user, LlmProvider model, String message, TurnListener listener)
+            throws Exception {
+        return as(user, () -> new ChatService(model, 10, Duration.ofMinutes(10))
+                .chat(ConversationStore.get().forUser(user), message, "/job/app/", listener));
+    }
+
+    @Test
+    void listenerSeesTextToolsAndProposalsInOrder() throws Exception {
+        ScriptedProvider model = new ScriptedProvider().streaming()
+                .toolCall("get_job", "{\"job\":\"app\"}")
+                .toolCall("trigger_build", "{\"job\":\"app\"}")
+                .text("I proposed a build of app.");
+        Recorder rec = new Recorder();
+
+        TurnResult turn = chat("dev", model, "build app", rec);
+
+        assertEquals(List.of("tool:get_job", "tool:trigger_build", "proposal:trigger_build",
+                "text:I proposed a build of app."), rec.events);
+        assertEquals("I proposed a build of app.", turn.reply());
+        assertTrue(app.getBuilds().isEmpty(), "streaming changes nothing about confirmation");
+    }
+
+    @Test
+    void nonStreamingProviderStillReportsTheText() throws Exception {
+        Recorder rec = new Recorder();
+        chat("dev", new ScriptedProvider().text("Hello."), "hi", rec);
+        assertEquals(List.of("text:Hello."), rec.events);
+    }
+
+    @Test
+    void textOfSeparateModelCallsIsSeparatedByABlankLine() throws Exception {
+        // First call: some text plus a tool call; second call: the final text.
+        LlmProvider model = new ScriptedProvider() {
+            private int calls;
+
+            @Override
+            public synchronized LlmResponse chat(LlmRequest request, Consumer<String> onTextDelta) {
+                calls++;
+                if (calls == 1) {
+                    onTextDelta.accept("Checking app.");
+                    ToolCall call = new ToolCall("c1", "get_job", Json.object().put("job", "app"));
+                    return new LlmResponse(ChatMessage.assistant("Checking app.", List.of(call), null),
+                            LlmResponse.StopReason.TOOL_USE, 1, 1);
+                }
+                onTextDelta.accept("It is fine.");
+                return new LlmResponse(ChatMessage.assistant("It is fine.", List.of(), null),
+                        LlmResponse.StopReason.END_TURN, 1, 1);
+            }
+        };
+        Recorder rec = new Recorder();
+
+        TurnResult turn = chat("dev", model, "how is app?", rec);
+
+        assertEquals(List.of("text:Checking app.", "tool:get_job", "text:\n\nIt is fine."), rec.events);
+        assertEquals("Checking app.\n\nIt is fine.", turn.reply());
     }
 
     @Test

@@ -66,6 +66,51 @@ class MajorDomeRootActionTest {
     }
 
     @Test
+    void chatStreamSendsEventsThenDone() throws Exception {
+        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
+                .grant(Jenkins.READ, Item.READ, Item.BUILD, MajorDomePermissions.USE).everywhere().to("dev"));
+        j.createFreeStyleProject("app");
+        model.streaming()
+                .toolCall("trigger_build", "{\"job\":\"app\"}")
+                .text("Proposed a build.\nConfirm it below.");
+        JenkinsRule.WebClient wc = j.createWebClient().login("dev");
+
+        Page page = post(wc, "majordome/chatStream", "{\"message\":\"build app\",\"page\":\"/\"}", true);
+
+        assertEquals(200, page.getWebResponse().getStatusCode());
+        assertTrue(page.getWebResponse().getContentType().startsWith("text/event-stream"));
+        String body = page.getWebResponse().getContentAsString();
+        int tool = body.indexOf("event: tool\ndata: {\"name\":\"trigger_build\"}");
+        int proposal = body.indexOf("event: proposal\n");
+        int text = body.indexOf("event: text\ndata: {\"delta\":\"Prop\"}");
+        int done = body.indexOf("event: done\n");
+        assertTrue(tool >= 0 && proposal > tool && text > proposal && done > text, body);
+        // Every data line is a single line of JSON, even when the text contains newlines.
+        for (String line : body.split("\n")) {
+            if (line.startsWith("data: ")) {
+                Json.parse(line.substring("data: ".length()));
+            }
+        }
+        JsonNode result = Json.parse(body.substring(body.indexOf("data: ", done) + 6).split("\n")[0]);
+        assertEquals("Proposed a build.\nConfirm it below.", result.path("reply").asText());
+        assertEquals(1, result.path("proposals").size());
+        assertTrue(j.jenkins.getItemByFullName("app", hudson.model.FreeStyleProject.class).getBuilds().isEmpty());
+    }
+
+    @Test
+    void chatStreamRejectsBadRequestsBeforeStreaming() throws Exception {
+        JenkinsRule.WebClient wc = j.createWebClient().login("dev").withThrowExceptionOnFailingStatusCode(false);
+
+        Page empty = post(wc, "majordome/chatStream", "{\"message\":\"  \"}", true);
+        assertEquals(400, empty.getWebResponse().getStatusCode());
+        assertTrue(empty.getWebResponse().getContentType().startsWith("application/json"));
+
+        Page noCrumb = post(wc, "majordome/chatStream", "{\"message\":\"hi\"}", false);
+        assertEquals(403, noCrumb.getWebResponse().getStatusCode());
+        assertTrue(model.requests().isEmpty());
+    }
+
+    @Test
     void requiresUsePermission() throws Exception {
         JenkinsRule.WebClient wc = j.createWebClient().login("outsider").withThrowExceptionOnFailingStatusCode(false);
         Page page = wc.getPage(new URL(j.getURL(), "majordome/history"));

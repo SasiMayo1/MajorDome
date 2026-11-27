@@ -3,6 +3,7 @@ package io.jenkins.plugins.majordome.llm;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
 import edu.umd.cs.findbugs.annotations.NonNull;
 import hudson.Extension;
 import hudson.ProxyConfiguration;
@@ -10,7 +11,9 @@ import hudson.Util;
 import hudson.util.FormValidation;
 import hudson.util.ListBoxModel;
 import io.jenkins.plugins.majordome.util.Json;
+import io.jenkins.plugins.majordome.util.Text;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -18,8 +21,12 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
+import java.util.TreeMap;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 import jenkins.model.Jenkins;
 import org.jenkinsci.Symbol;
 import org.kohsuke.stapler.DataBoundConstructor;
@@ -40,6 +47,8 @@ public class OpenAiCompatibleProvider extends LlmProvider {
     private String credentialsId;
     private int maxTokens = 8192;
     private int timeoutSeconds = 300;
+    /** Boxed so configurations saved before this option existed load as "on" (XStream leaves it null). */
+    private Boolean stream = Boolean.TRUE;
 
     @DataBoundConstructor
     public OpenAiCompatibleProvider(String baseUrl, String model) {
@@ -88,8 +97,79 @@ public class OpenAiCompatibleProvider extends LlmProvider {
         return "openai-compatible:" + baseUrl + ":" + model;
     }
 
+    public boolean isStream() {
+        return stream == null || stream;
+    }
+
+    /** Stream replies token by token. Turn off for servers that do not support streaming with tools. */
+    @DataBoundSetter
+    public void setStream(boolean stream) {
+        this.stream = stream;
+    }
+
     @Override
     public LlmResponse chat(LlmRequest request) throws LlmException, InterruptedException {
+        HttpResponse<String> response = send(requestBody(request), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (response.statusCode() / 100 != 2) {
+            throw httpError(response.statusCode(), response.body());
+        }
+        try {
+            return fromResponse(Json.parse(response.body()));
+        } catch (IOException e) {
+            throw new LlmException("Malformed response from model server", e);
+        }
+    }
+
+    @Override
+    public LlmResponse chat(LlmRequest request, Consumer<String> onTextDelta) throws LlmException, InterruptedException {
+        if (!isStream()) {
+            return chat(request);
+        }
+        ObjectNode body = requestBody(request);
+        body.put("stream", true);
+        body.putObject("stream_options").put("include_usage", true);
+        HttpResponse<Stream<String>> response = send(body, HttpResponse.BodyHandlers.ofLines());
+        StreamAccumulator acc = new StreamAccumulator();
+        try (Stream<String> lines = response.body()) {
+            if (response.statusCode() / 100 != 2) {
+                throw httpError(response.statusCode(), String.join("\n", lines.limit(50).toList()));
+            }
+            for (Iterator<String> it = lines.iterator(); it.hasNext(); ) {
+                if (Thread.interrupted()) {
+                    throw new InterruptedException();
+                }
+                String line = it.next();
+                if (!line.startsWith("data:")) {
+                    continue; // blank separators, comments, "event:" lines
+                }
+                String data = line.substring("data:".length()).strip();
+                if (data.equals("[DONE]")) {
+                    break;
+                }
+                if (data.isEmpty()) {
+                    continue;
+                }
+                JsonNode chunk;
+                try {
+                    chunk = Json.parse(data);
+                } catch (IOException e) {
+                    throw new LlmException("Malformed stream chunk from model server", e);
+                }
+                if (chunk.has("error")) {
+                    throw new LlmException("Model server error: " + Text.truncate(chunk.path("error").toString(), 500));
+                }
+                String delta = acc.add(chunk);
+                if (delta != null && !delta.isEmpty()) {
+                    onTextDelta.accept(delta);
+                }
+            }
+        } catch (UncheckedIOException e) {
+            throw new LlmException("Connection to " + baseUrl + " lost while streaming: " + e.getMessage(), e);
+        }
+        return acc.toResponse();
+    }
+
+    private ObjectNode requestBody(LlmRequest request) throws LlmException {
         if (model == null) {
             throw new LlmException("No model configured for the OpenAI-compatible provider");
         }
@@ -106,7 +186,11 @@ public class OpenAiCompatibleProvider extends LlmProvider {
                 fn.set("parameters", spec.inputSchema());
             }
         }
+        return body;
+    }
 
+    private <T> HttpResponse<T> send(ObjectNode body, HttpResponse.BodyHandler<T> handler)
+            throws LlmException, InterruptedException {
         HttpRequest.Builder http = HttpRequest.newBuilder(URI.create(stripSlash(baseUrl) + "/chat/completions"))
                 .timeout(Duration.ofSeconds(timeoutSeconds))
                 .header("Content-Type", "application/json")
@@ -115,25 +199,119 @@ public class OpenAiCompatibleProvider extends LlmProvider {
         if (apiKey != null) {
             http.header("Authorization", "Bearer " + apiKey);
         }
-
-        HttpResponse<String> response;
         try {
             HttpClient client = ProxyConfiguration.newHttpClientBuilder()
                     .connectTimeout(Duration.ofSeconds(20))
                     .build();
-            response = client.send(http.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            return client.send(http.build(), handler);
         } catch (IOException e) {
             throw new LlmException("Cannot reach " + baseUrl + ": " + e.getMessage(), e);
         }
-        if (response.statusCode() / 100 != 2) {
-            throw new LlmException("Model server returned HTTP " + response.statusCode() + ": "
-                    + io.jenkins.plugins.majordome.util.Text.truncate(response.body(), 500));
+    }
+
+    private static LlmException httpError(int status, String body) {
+        return new LlmException("Model server returned HTTP " + status + ": " + Text.truncate(body, 500));
+    }
+
+    /**
+     * Rebuilds one assistant message from streamed chunks. Text arrives as {@code delta.content}; each
+     * tool call arrives in pieces keyed by {@code index} (OpenAI) or whole in one chunk (Ollama).
+     */
+    static final class StreamAccumulator {
+        private static final class PartialCall {
+            String id;
+            String name;
+            final StringBuilder arguments = new StringBuilder();
         }
+
+        private final StringBuilder text = new StringBuilder();
+        private final TreeMap<Integer, PartialCall> calls = new TreeMap<>();
+        private String finishReason = "";
+        private long inputTokens;
+        private long outputTokens;
+
+        /** Adds a chunk and returns the text it contributed, if any. */
+        @CheckForNull
+        String add(JsonNode chunk) {
+            JsonNode usage = chunk.path("usage");
+            if (usage.isObject()) {
+                inputTokens = usage.path("prompt_tokens").asLong(inputTokens);
+                outputTokens = usage.path("completion_tokens").asLong(outputTokens);
+            }
+            JsonNode choice = chunk.path("choices").path(0);
+            if (choice.isMissingNode()) {
+                return null;
+            }
+            if (choice.path("finish_reason").isTextual()) {
+                finishReason = choice.path("finish_reason").asText();
+            }
+            JsonNode delta = choice.path("delta");
+            for (JsonNode tc : delta.path("tool_calls")) {
+                int index;
+                if (tc.path("index").isInt()) {
+                    index = tc.path("index").asInt();
+                } else if (tc.path("id").isTextual() || calls.isEmpty()) {
+                    index = calls.size(); // no index: a chunk with an id starts a new call
+                } else {
+                    index = calls.lastKey();
+                }
+                PartialCall call = calls.computeIfAbsent(index, k -> new PartialCall());
+                if (tc.path("id").isTextual() && !tc.path("id").asText().isEmpty()) {
+                    call.id = tc.path("id").asText();
+                }
+                JsonNode fn = tc.path("function");
+                if (fn.path("name").isTextual() && call.name == null) {
+                    call.name = fn.path("name").asText();
+                }
+                JsonNode args = fn.path("arguments");
+                if (args.isTextual()) {
+                    call.arguments.append(args.asText());
+                } else if (args.isObject()) {
+                    call.arguments.append(Json.write(args));
+                }
+            }
+            JsonNode content = delta.path("content");
+            if (content.isTextual()) {
+                text.append(content.asText());
+                return content.asText();
+            }
+            return null;
+        }
+
+        LlmResponse toResponse() {
+            List<ToolCall> out = new ArrayList<>();
+            int i = 0;
+            for (PartialCall c : calls.values()) {
+                if (c.name != null) {
+                    out.add(new ToolCall(c.id != null ? c.id : "call_" + i, c.name, parseArguments(c.arguments.toString())));
+                }
+                i++;
+            }
+            return new LlmResponse(
+                    ChatMessage.assistant(text.length() == 0 ? null : text.toString(), out, null),
+                    stopReason(finishReason, !out.isEmpty()),
+                    inputTokens,
+                    outputTokens);
+        }
+    }
+
+    private static JsonNode parseArguments(String args) {
         try {
-            return fromResponse(Json.parse(response.body()));
+            return Json.parse(args.isBlank() ? "{}" : args);
         } catch (IOException e) {
-            throw new LlmException("Malformed response from model server", e);
+            // Small local models sometimes emit invalid JSON; the tool will reject it and the model can retry.
+            return Json.object().put("_invalid_arguments", args);
         }
+    }
+
+    private static LlmResponse.StopReason stopReason(String finish, boolean hasCalls) {
+        return switch (finish) {
+            case "tool_calls", "function_call" -> LlmResponse.StopReason.TOOL_USE;
+            case "stop" -> hasCalls ? LlmResponse.StopReason.TOOL_USE : LlmResponse.StopReason.END_TURN;
+            case "length" -> LlmResponse.StopReason.MAX_TOKENS;
+            case "content_filter" -> LlmResponse.StopReason.REFUSAL;
+            default -> hasCalls ? LlmResponse.StopReason.TOOL_USE : LlmResponse.StopReason.OTHER;
+        };
     }
 
     private static ArrayNode toMessages(LlmRequest request) {
@@ -175,29 +353,15 @@ public class OpenAiCompatibleProvider extends LlmProvider {
             JsonNode fn = call.path("function");
             String id = call.path("id").asText("call_" + index);
             index++;
-            JsonNode input;
-            try {
-                String args = fn.path("arguments").asText("{}");
-                input = Json.parse(args.isBlank() ? "{}" : args);
-            } catch (IOException e) {
-                // Small local models sometimes emit invalid JSON; the tool will reject it and the model can retry.
-                input = Json.object().put("_invalid_arguments", fn.path("arguments").asText());
-            }
-            calls.add(new ToolCall(id, fn.path("name").asText(), input));
+            JsonNode args = fn.path("arguments");
+            calls.add(new ToolCall(id, fn.path("name").asText(),
+                    parseArguments(args.isObject() ? Json.write(args) : args.asText("{}"))));
         }
         String text = message.path("content").isTextual() ? message.path("content").asText() : null;
-        String finish = choice.path("finish_reason").asText("");
-        LlmResponse.StopReason stop = switch (finish) {
-            case "tool_calls", "function_call" -> LlmResponse.StopReason.TOOL_USE;
-            case "stop" -> calls.isEmpty() ? LlmResponse.StopReason.END_TURN : LlmResponse.StopReason.TOOL_USE;
-            case "length" -> LlmResponse.StopReason.MAX_TOKENS;
-            case "content_filter" -> LlmResponse.StopReason.REFUSAL;
-            default -> calls.isEmpty() ? LlmResponse.StopReason.OTHER : LlmResponse.StopReason.TOOL_USE;
-        };
         JsonNode usage = json.path("usage");
         return new LlmResponse(
                 ChatMessage.assistant(text, calls, null),
-                stop,
+                stopReason(choice.path("finish_reason").asText(""), !calls.isEmpty()),
                 usage.path("prompt_tokens").asLong(0),
                 usage.path("completion_tokens").asLong(0));
     }

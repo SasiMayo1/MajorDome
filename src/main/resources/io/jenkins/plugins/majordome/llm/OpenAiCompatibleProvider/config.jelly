@@ -16,5 +16,8 @@
     <f:entry title="Request timeout (seconds)" field="timeoutSeconds">
       <f:number default="300" min="10"/>
     </f:entry>
+    <f:entry field="stream">
+      <f:checkbox title="Stream replies as they are generated" default="true"/>
+    </f:entry>
   </f:advanced>
 </j:jelly>

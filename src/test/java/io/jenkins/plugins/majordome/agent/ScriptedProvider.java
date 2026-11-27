@@ -13,6 +13,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.function.Consumer;
 
 /** A fake model that replays scripted responses and records every request it receives. */
 public class ScriptedProvider extends LlmProvider {
@@ -37,6 +38,14 @@ public class ScriptedProvider extends LlmProvider {
         return this;
     }
 
+    private transient boolean streaming;
+
+    /** Report text in 4-character pieces through the streaming callback, like a streaming provider. */
+    public ScriptedProvider streaming() {
+        streaming = true;
+        return this;
+    }
+
     @Override
     public synchronized LlmResponse chat(LlmRequest request) {
         requests.add(request);
@@ -44,6 +53,18 @@ public class ScriptedProvider extends LlmProvider {
             throw new AssertionError("Unexpected extra model call");
         }
         return script.removeFirst();
+    }
+
+    @Override
+    public synchronized LlmResponse chat(LlmRequest request, Consumer<String> onTextDelta) {
+        LlmResponse response = chat(request);
+        String text = response.message().getText();
+        if (streaming && text != null) {
+            for (int i = 0; i < text.length(); i += 4) {
+                onTextDelta.accept(text.substring(i, Math.min(text.length(), i + 4)));
+            }
+        }
+        return response;
     }
 
     @Override
